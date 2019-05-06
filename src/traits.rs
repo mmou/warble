@@ -1,4 +1,4 @@
-//!  AEAD Sender and Receiver traits, and implementations for Strobe, based on https://strobe.sourceforge.io/examples/aead/.
+///  AEAD Sender and Receiver traits, and implementations for the Strobe struct, based on https://strobe.sourceforge.io/examples/aead/.
 extern crate strobe_rs;
 use strobe_rs::{AuthError, Strobe};
 

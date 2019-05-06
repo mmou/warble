@@ -1,8 +1,15 @@
 # Warble
 
-AEAD traits and implementation using Strobe. Includes a basic implementation on Strobe, as
-well as Warble, an implementation that supports AEAD sessions over an
-unreliable transport. 
+Warble is an Authenticated Encryption with Additional Data (AEAD) protocol 
+using the Strobe framework. 
+
+The implementation of the AEAD traits for the Strobe struct allows for composition with other protocols, and for the transmission of any number of in-order messages.
+
+The implementation of the AEAD traits for the Warble structs supports
+the transmission of any number of unordered messages by using session keys and
+nonces to ensure key uniqueness. 
+
+Warble assumes that key exchange has already taken place.
 
 ## Known security considerations:
 - This is unaudited code built on top of unaudited code.

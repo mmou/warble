@@ -1,9 +1,10 @@
-//!  Anti-replay window, as described in https://tools.ietf.org/html/rfc6479
-
+///  Anti-replay window, as described in https://tools.ietf.org/html/rfc6479
+/// TODO: use bitmap or generic-array?
 const NUM_BLOCKS: usize = 20;
 const BLOCK_LEN: usize = 5;
 const BITMAP_SIZE: usize = 1024; // 2^10, bits
-const WINDOW_SIZE: usize = BITMAP_SIZE - 32; // 2^10-2^5, bits
+const BLOCK_SIZE: usize = 32; // 2^5, bits
+const WINDOW_SIZE: usize = BITMAP_SIZE - BLOCK_SIZE; // 2^10-2^5, bits
 const MAX_COUNTER: usize = usize::max_value() - WINDOW_SIZE - 1;
 
 pub struct Window {
@@ -36,10 +37,7 @@ impl Window {
 
         let bit_loc_mask: usize = (1 << BLOCK_LEN as usize) - 1;
         let bitmap_mask: usize = NUM_BLOCKS - 1;
-
-        let bit_i: usize = counter & bit_loc_mask;
         let block_i: usize = counter >> BLOCK_LEN;
-        let actual_block_i: usize = block_i & bitmap_mask;
 
         // if nonce is not too old and > max seen nonce, update window, true
         if counter > self.counter {
@@ -51,12 +49,15 @@ impl Window {
             self.counter = counter;
         }
 
+        let actual_block_i: usize = block_i & bitmap_mask;
+        let bit_i: usize = counter & bit_loc_mask;
+        let bit_i_mask: usize = 1 << bit_i as usize;
         // if counter is in window range and was seen before, false
-        if self.seen[actual_block_i] & (1 << bit_i as usize) != 0 {
+        if self.seen[actual_block_i] & bit_i_mask != 0 {
             return false;
         }
 
-        self.seen[actual_block_i] |= 1 << bit_i as usize;
+        self.seen[actual_block_i] |= bit_i_mask;
         true
     }
 }

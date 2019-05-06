@@ -1,5 +1,9 @@
-//! Warbler and Warblee implement AeadSender and AeadReceiver respectively. They support
-//! authenticated encrypted communication sessions over an unreliable transport.
+/// Warbler and Warblee implement AeadSender and AeadReceiver respectively. They support
+/// authenticated encrypted communication sessions over an unreliable transport.
+///
+/// Within a session, each pair of send and receive operations forks the transcript in order to
+/// allow for out-of-order encryption and authentication of each message. A unique nonce per
+/// message ensures uniqueness of the transcript per message.
 extern crate rand_core;
 extern crate strobe_rs;
 use crate::traits::{AeadReceiver, AeadSender, NonceError};
@@ -12,46 +16,51 @@ const NONCE_LEN: usize = 64 / 8; // bytes
 const MAC_LEN: usize = 16; // bytes
 const MIN_LEN: usize = NONCE_LEN + MAC_LEN;
 
+/// Warbler maintains sender's transcript for a given session
 pub struct Warbler {
     transcript: Strobe,
-    session_id: u64,
     counter: u64,
 }
+
+/// Warblee maintains the receiver's transcript for a given session.
 pub struct Warblee {
     transcript: Strobe,
-    session_id: u64,
     window: Window,
 }
 
 impl Warbler {
-    pub fn new<T>(mut transcript: Strobe, rng: &mut T) -> (Self, u64)
+    /// creates a new session, generates and encrypts a random session id.
+    pub fn new<T>(mut transcript: Strobe, rng: &mut T) -> (Self, Vec<u8>)
     where
         T: RngCore + CryptoRng,
     {
         transcript.ad(DOMAIN_SEP.as_bytes().to_vec(), None, false);
         transcript.ad(vec![1], None, false); // protocol version 0x01
 
-        let session_id = rng.next_u64();
+        // random session id, ensures unique nonces between sessions
+        let session_id: u64 = rng.next_u64();
+        let encrypted_session_id =
+            transcript.send_enc(session_id.to_be_bytes().to_vec(), None, false);
 
         (
             Warbler {
                 transcript,
-                session_id,
                 counter: 0u64,
             },
-            session_id,
+            encrypted_session_id,
         )
     }
 }
 
 impl Warblee {
-    pub fn new(mut transcript: Strobe, session_id: u64) -> Self {
+    /// creates a new session with a given encrypted session id.
+    pub fn new(mut transcript: Strobe, encrypted_session_id: &[u8]) -> Self {
         transcript.ad(DOMAIN_SEP.as_bytes().to_vec(), None, false);
         transcript.ad(vec![1], None, false); // protocol version 0x01
+        transcript.recv_enc(encrypted_session_id.to_vec(), None, false);
 
         Warblee {
             transcript,
-            session_id,
             window: Window::new(),
         }
     }
@@ -62,12 +71,13 @@ impl AeadSender for Warbler {
         // fork the transcript
         let transcript = &mut self.transcript.clone();
 
+        // sender is responsible for not reusing nonces
         if self.counter == u64::max_value() - 1 {
             return Err(NonceError);
         } else {
             self.counter += 1;
         }
-        let nonce = (self.session_id ^ (self.counter)).to_be_bytes().to_vec();
+        let nonce = self.counter.to_be_bytes().to_vec();
         transcript.ad(nonce.clone(), None, false);
 
         if let Some(ad) = ad {
@@ -83,6 +93,38 @@ impl AeadSender for Warbler {
         ciphertext.append(&mut transcript.send_mac(MAC_LEN, None, false));
 
         Ok(ciphertext)
+    }
+}
+
+impl AeadReceiver for Warblee {
+    // expected data format: nonce || optional encrypted message || mac
+    fn receive(&mut self, data: &[u8], ad: Option<&[u8]>) -> Result<Option<Vec<u8>>, AuthError> {
+        // fork the transcript
+        let transcript = &mut self.transcript.clone();
+
+        let ciphertext = Ciphertext::parse(data)?;
+
+        let mut nonce: [u8; 8] = [0; 8];
+        nonce.copy_from_slice(ciphertext.nonce);
+        if self.window.check_counter(usize::from_be_bytes(nonce)) {
+            transcript.ad(ciphertext.nonce.to_vec(), None, false);
+        } else {
+            return Err(AuthError);
+        }
+
+        if let Some(ad) = ad {
+            transcript.ad(ad.to_vec(), None, false);
+        }
+
+        let plaintext;
+        if ciphertext.msg.len() == 0 {
+            plaintext = None;
+        } else {
+            plaintext = Some(transcript.recv_enc(ciphertext.msg.to_vec(), None, false));
+        }
+
+        transcript.recv_mac(ciphertext.mac.to_vec(), None, false)?;
+        Ok(plaintext)
     }
 }
 
@@ -104,40 +146,6 @@ impl<'a> Ciphertext<'a> {
             msg: &data[NONCE_LEN..data_len],
             mac: &data[data_len..],
         })
-    }
-}
-
-impl AeadReceiver for Warblee {
-    // expected data format: nonce || optional encrypted message || mac
-    fn receive(&mut self, data: &[u8], ad: Option<&[u8]>) -> Result<Option<Vec<u8>>, AuthError> {
-        // fork the transcript
-        let transcript = &mut self.transcript.clone();
-
-        let ciphertext = Ciphertext::parse(data)?;
-
-        let mut nonce: [u8; 8] = [0; 8];
-        nonce.copy_from_slice(ciphertext.nonce);
-        let session_id: usize = self.session_id as usize;
-        let counter: usize = usize::from_be_bytes(nonce) ^ session_id;
-        if self.window.check_counter(counter) {
-            transcript.ad(ciphertext.nonce.to_vec(), None, false);
-        } else {
-            return Err(AuthError);
-        }
-
-        if let Some(ad) = ad {
-            transcript.ad(ad.to_vec(), None, false);
-        }
-
-        let plaintext;
-        if ciphertext.msg.len() == 0 {
-            plaintext = None;
-        } else {
-            plaintext = Some(transcript.recv_enc(ciphertext.msg.to_vec(), None, false));
-        }
-
-        transcript.recv_mac(ciphertext.mac.to_vec(), None, false)?;
-        Ok(plaintext)
     }
 }
 
@@ -168,7 +176,7 @@ mod tests {
         assert_eq!(tx_b.prf(64, None, false), rx_a.prf(64, None, false));
 
         let (sender, session_id) = Warbler::new(tx_a, &mut rng);
-        let receiver = Warblee::new(rx_b, session_id);
+        let receiver = Warblee::new(rx_b, &session_id);
         (sender, receiver)
     }
 
@@ -182,7 +190,7 @@ mod tests {
         tb.key(b"secretkey".to_vec(), None, false);
 
         let (sender, session_id) = Warbler::new(ta, &mut rng);
-        let receiver = Warblee::new(tb, session_id);
+        let receiver = Warblee::new(tb, &session_id);
         (sender, receiver)
     }
 
