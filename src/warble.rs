@@ -98,6 +98,8 @@ impl AeadSender for Warbler {
 
 impl AeadReceiver for Warblee {
     // expected data format: nonce || optional encrypted message || mac
+    // TODO: replace with a struct, as is done in
+    // https://github.com/rozbb/disco-rs/blob/master/src/symmetric.rs?
     fn receive(&mut self, data: &[u8], ad: Option<&[u8]>) -> Result<Option<Vec<u8>>, AuthError> {
         // fork the transcript
         let transcript = &mut self.transcript.clone();

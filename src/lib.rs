@@ -1,5 +1,5 @@
 #![feature(inner_deref)]
-///  AEAD traits and implementation using Strobe. Anti-replay detection for multi-message sessions.
+///  AEAD traits and implementation using Strobe.
 mod traits;
 mod warble;
 mod window;
