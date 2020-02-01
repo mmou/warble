@@ -2,63 +2,82 @@
 extern crate strobe_rs;
 use strobe_rs::{AuthError, Strobe};
 
-static DOMAIN_SEP: &str = "https://strobe.sourceforge.io/examples/aead";
-const MAC_LEN: usize = 16; // bytes
+pub static DOMAIN_SEP: &str = "https://strobe.sourceforge.io/examples/aead";
+pub const MAC_LEN: usize = 16; // bytes
+pub const MSG_LEN: usize = 24; // bytes
 
 #[derive(Debug)]
 pub struct NonceError;
 
 pub trait AeadSender {
-    fn send(&mut self, data: Option<&[u8]>, ad: Option<&[u8]>) -> Result<Vec<u8>, NonceError>;
+    fn send(
+        &mut self,
+        data: Option<&mut [u8]>,
+        ad: Option<&[u8]>,
+        mac: &mut [u8],
+        nonce: &mut [u8],
+    ) -> Result<(), NonceError>;
 }
 
 pub trait AeadReceiver {
-    fn receive(&mut self, data: &[u8], ad: Option<&[u8]>) -> Result<Option<Vec<u8>>, AuthError>;
+    fn receive(
+        &mut self,
+        data: Option<&mut [u8]>,
+        ad: Option<&[u8]>,
+        mac: &mut [u8],
+        nonce: Option<&mut [u8]>,
+    ) -> Result<(), AuthError>;
 }
 
 impl AeadSender for Strobe {
-    fn send(&mut self, data: Option<&[u8]>, ad: Option<&[u8]>) -> Result<Vec<u8>, NonceError> {
-        self.ad(DOMAIN_SEP.as_bytes().to_vec(), None, false);
+    fn send(
+        &mut self,
+        data: Option<&mut [u8]>,
+        ad: Option<&[u8]>,
+        mac: &mut [u8],
+        nonce: &mut [u8],
+    ) -> Result<(), NonceError> {
+        self.ad(DOMAIN_SEP.as_bytes(), false);
 
         if let Some(ad) = ad {
-            self.ad(ad.to_vec(), None, false);
+            self.ad(ad, false);
         }
+
+        let new_nonce = &0usize.to_be_bytes();
+        self.meta_ad(new_nonce, false);
+        nonce.copy_from_slice(new_nonce);
 
         // encrypt then mac
-        let mut ciphertext = Vec::new();
-        if let Some(data) = data {
-            ciphertext.append(&mut self.send_enc(data.to_vec(), None, false));
+        if let Some(d) = data {
+            self.send_enc(d, false);
         }
-
-        ciphertext.append(&mut self.send_mac(MAC_LEN, None, false));
-
-        Ok(ciphertext)
+        self.send_mac(mac, false);
+        Ok(())
     }
 }
 
 impl AeadReceiver for Strobe {
-    // expected data format: optional encrypted message || mac
-    fn receive(&mut self, data: &[u8], ad: Option<&[u8]>) -> Result<Option<Vec<u8>>, AuthError> {
-        self.ad(DOMAIN_SEP.as_bytes().to_vec(), None, false);
-
-        if data.len() < MAC_LEN {
-            return Err(AuthError);
-        }
+    fn receive(
+        &mut self,
+        data: Option<&mut [u8]>,
+        ad: Option<&[u8]>,
+        mac: &mut [u8],
+        nonce: Option<&mut [u8]>,
+    ) -> Result<(), AuthError> {
+        self.ad(DOMAIN_SEP.as_bytes(), false);
 
         if let Some(ad) = ad {
-            self.ad(ad.to_vec(), None, false);
+            self.ad(ad, false);
         }
 
-        let plaintext;
-        let data_len = data.len() - MAC_LEN;
-        if data.len() == MAC_LEN {
-            plaintext = None;
-        } else {
-            plaintext = Some(self.recv_enc(data[..data_len].to_vec(), None, false));
+        if let Some(nonce) = nonce {
+            self.meta_ad(nonce, false);
         }
 
-        self.recv_mac(data[data_len..].to_vec(), None, false)?;
-        Ok(plaintext)
+        if let Some(data) = data {
+            self.recv_enc(data, false);
+        }
+        self.recv_mac(mac, false)
     }
 }
 
@@ -68,11 +87,11 @@ mod tests {
     use strobe_rs::{SecParam, Strobe};
 
     fn setup_strobe() -> (Strobe, Strobe) {
-        let mut ta = Strobe::new(b"strobetest".to_vec(), SecParam::B128);
-        let mut tb = Strobe::new(b"strobetest".to_vec(), SecParam::B128);
+        let mut ta = Strobe::new(b"strobetest", SecParam::B128);
+        let mut tb = Strobe::new(b"strobetest", SecParam::B128);
 
-        ta.key(b"secretkey".to_vec(), None, false);
-        tb.key(b"secretkey".to_vec(), None, false);
+        ta.key(b"secretkey", false);
+        tb.key(b"secretkey", false);
 
         (ta, tb)
     }
@@ -80,25 +99,73 @@ mod tests {
     #[test]
     fn strobe() {
         let (mut sender, mut receiver) = setup_strobe();
-        let message = Some("hello world".as_bytes());
+        let mut message = [0u8; MSG_LEN];
+        let txt = b"hello world";
+        for (m, t) in message.iter_mut().zip(txt.iter()) {
+            *m = *t
+        }
+        assert_eq!(message.len(), MSG_LEN);
+        let mut pre = [0u8; MSG_LEN];
+        pre.copy_from_slice(&message);
+
         let ad = Some("additional stuff".as_bytes());
-        let ciphertext: Vec<u8> = sender.send(message, ad).unwrap();
-        let response = receiver.receive(&ciphertext, ad);
-        assert_eq!(message, response.unwrap().deref());
+        let mut mac = [0u8; MAC_LEN];
+        let nonce = &mut 0usize.to_be_bytes();
+        assert!(sender.send(Some(&mut message), ad, &mut mac, nonce).is_ok());
+        let mut ciphertext = [0u8; MSG_LEN];
+        ciphertext.copy_from_slice(&message);
+        assert_eq!(message.len(), ciphertext.len());
+
+        assert!(receiver
+            .receive(Some(&mut ciphertext), ad, &mut mac, Some(nonce))
+            .is_ok());
+        let mut round_trip = [0u8; MSG_LEN];
+        round_trip.copy_from_slice(&ciphertext);
+
+        assert_eq!(round_trip, pre);
     }
 
     #[test]
     #[should_panic]
     fn strobe_unordered_messages() {
         let (mut sender, mut receiver) = setup_strobe();
-        let message = Some("hello world".as_bytes());
+        let txt = b"hello world";
+        let mut message1 = [0u8; MSG_LEN];
+        let mut message2 = [0u8; MSG_LEN];
+        for (m, t) in message1.iter_mut().zip(txt.iter()) {
+            *m = *t
+        }
+        for (m, t) in message2.iter_mut().zip(txt.iter()) {
+            *m = *t
+        }
+        let mut pre = [0u8; MSG_LEN];
+        pre.copy_from_slice(&message1);
+
         let ad = Some("additional stuff".as_bytes());
+        let mut mac1 = [0u8; MAC_LEN];
+        let mut mac2 = [0u8; MAC_LEN];
+        let nonce1 = &mut 0usize.to_be_bytes();
+        let nonce2 = &mut 0usize.to_be_bytes();
 
-        let _ciphertext1: Vec<u8> = sender.send(message, ad).unwrap();
-        let ciphertext2: Vec<u8> = sender.send(message, ad).unwrap();
+        assert!(sender
+            .send(Some(&mut message1), ad, &mut mac1, nonce1)
+            .is_ok());
+        let mut ciphertext1 = [0u8; MSG_LEN];
+        ciphertext1.copy_from_slice(&message1);
 
-        let response2 = receiver.receive(&ciphertext2, ad);
+        assert!(sender
+            .send(Some(&mut message2), ad, &mut mac2, nonce2)
+            .is_ok());
+        let mut ciphertext2 = [0u8; MSG_LEN];
+        ciphertext2.copy_from_slice(&message2);
+
+        assert!(receiver
+            .receive(Some(&mut ciphertext2), ad, &mut mac2, Some(nonce2))
+            .is_ok());
+        let mut round_trip2 = [0u8; MSG_LEN];
+        round_trip2.copy_from_slice(&ciphertext2);
+
         // bare strobe doesn't support out of order messages
-        assert_eq!(message, response2.unwrap().deref());
+        assert_eq!(round_trip2, pre);
     }
 }

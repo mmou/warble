@@ -128,5 +128,4 @@ mod tests {
         assert_eq!(true, w.check_counter(MAX_COUNTER - 3), "msg 36");
         assert_eq!(false, w.check_counter(12usize), "msg 37");
     }
-
 }
