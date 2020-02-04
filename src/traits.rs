@@ -2,9 +2,8 @@
 extern crate strobe_rs;
 use strobe_rs::{AuthError, Strobe};
 
-pub static DOMAIN_SEP: &str = "https://strobe.sourceforge.io/examples/aead";
 pub const MAC_LEN: usize = 16; // bytes
-pub const MSG_LEN: usize = 24; // bytes
+pub static DOMAIN_SEP: &str = "https://strobe.sourceforge.io/examples/aead";
 
 #[derive(Debug)]
 pub struct NonceError;
@@ -85,6 +84,8 @@ impl AeadReceiver for Strobe {
 mod tests {
     use crate::traits::*;
     use strobe_rs::{SecParam, Strobe};
+
+    const MSG_LEN: usize = 24; // bytes
 
     fn setup_strobe() -> (Strobe, Strobe) {
         let mut ta = Strobe::new(b"strobetest", SecParam::B128);

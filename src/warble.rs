@@ -16,7 +16,7 @@ static DOMAIN_SEP: &str = "https://github.com/mmou/warble";
 /// Warbler maintains sender's transcript for a given session
 pub struct Warbler {
     transcript: Strobe,
-    counter: u64,
+    counter: usize,
 }
 
 /// Warblee maintains the receiver's transcript for a given session.
@@ -27,7 +27,7 @@ pub struct Warblee {
 
 impl Warbler {
     /// creates a new session, populates session_id with an encrypted, newly generated session id.
-    pub fn new<T>(mut transcript: Strobe, rng: &mut T, session_id: &mut [u8]) -> Self
+    pub fn new<T>(mut transcript: Strobe, rng: &mut T, session_id: Option<&mut [u8]>) -> Self
     where
         T: RngCore + CryptoRng,
     {
@@ -35,24 +35,27 @@ impl Warbler {
         transcript.ad(&1u8.to_be_bytes(), false); // protocol version 0x01
 
         // random session id, ensures unique nonces between sessions
-        let mut new_session_id = rng.next_u64().to_be_bytes();
-        session_id.copy_from_slice(&mut new_session_id);
-        transcript.send_enc(session_id, false);
+        if let Some(session_id) = session_id {
+            let mut new_session_id = rng.next_u64().to_be_bytes();
+            session_id.copy_from_slice(&mut new_session_id);
+            transcript.send_enc(session_id, false);
+        }
 
         Warbler {
             transcript,
-            counter: 0u64,
+            counter: 0usize,
         }
     }
 }
 
 impl Warblee {
     /// creates a new session with a given encrypted session id.
-    pub fn new(mut transcript: Strobe, encrypted_session_id: &mut [u8]) -> Self {
+    pub fn new(mut transcript: Strobe, encrypted_session_id: Option<&mut [u8]>) -> Self {
         transcript.ad(DOMAIN_SEP.as_bytes(), false);
         transcript.ad(&1u8.to_be_bytes(), false); // protocol version 0x01
-        transcript.recv_enc(encrypted_session_id, false);
-
+        if let Some(encrypted_session_id) = encrypted_session_id {
+            transcript.recv_enc(encrypted_session_id, false);
+        }
         Warblee {
             transcript,
             window: Window::new(),
@@ -72,7 +75,7 @@ impl AeadSender for Warbler {
         let transcript = &mut self.transcript.clone();
 
         // sender is responsible for not reusing nonces
-        if self.counter == u64::max_value() - 1 {
+        if self.counter == usize::max_value() - 1 {
             return Err(NonceError);
         } else {
             self.counter += 1;
@@ -138,6 +141,8 @@ mod tests {
     use strobe_rs::{SecParam, Strobe};
     use yodel::{Duplex, Yodeler};
 
+    const MSG_LEN: usize = 24; // bytes
+
     // demonstrate usage with yodel for key agreement using SPEKE
     #[allow(non_snake_case)]
     fn setup_yodel() -> (Warbler, Warblee) {
@@ -167,8 +172,8 @@ mod tests {
         assert_eq!(ahash, bhash);
 
         let session_id = &mut [0u8; 8]; // initialize
-        let sender = Warbler::new(tx_a, &mut OsRng, session_id);
-        let receiver = Warblee::new(rx_b, session_id);
+        let sender = Warbler::new(tx_a, &mut OsRng, Some(session_id));
+        let receiver = Warblee::new(rx_b, Some(session_id));
         (sender, receiver)
     }
 
@@ -180,8 +185,8 @@ mod tests {
         tb.key(b"secretkey", false);
 
         let session_id = &mut [0u8; 8];
-        let sender = Warbler::new(ta, &mut OsRng, session_id);
-        let receiver = Warblee::new(tb, session_id);
+        let sender = Warbler::new(ta, &mut OsRng, Some(session_id));
+        let receiver = Warblee::new(tb, Some(session_id));
         (sender, receiver)
     }
 
@@ -395,7 +400,7 @@ mod tests {
         let ad = None;
         let mut mac = [0u8; MAC_LEN];
         let nonce = &mut 0usize.to_be_bytes();
-        sender.counter = u64::max_value() - 1;
+        sender.counter = usize::max_value() - 1;
         assert!(sender.send(message, ad, &mut mac, nonce).is_ok());
     }
 
