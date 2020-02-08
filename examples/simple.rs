@@ -23,7 +23,7 @@ fn main() {
         println!("Sending message: {:?}", str::from_utf8(txt).unwrap());
         let ad = Some("additional stuff".as_bytes());
         let mut mac = [0u8; MAC_LEN];
-        let nonce = &mut 0usize.to_be_bytes();
+        let nonce = &mut 0u32.to_be_bytes();
 
         let mut plaintext = [0u8; 20];
         for (m, t) in plaintext.iter_mut().zip(txt.iter()) {

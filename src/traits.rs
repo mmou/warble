@@ -42,7 +42,7 @@ impl AeadSender for Strobe {
             self.ad(ad, false);
         }
 
-        let new_nonce = &0usize.to_be_bytes();
+        let new_nonce = &0u32.to_be_bytes();
         self.meta_ad(new_nonce, false);
         nonce.copy_from_slice(new_nonce);
 
@@ -111,7 +111,7 @@ mod tests {
 
         let ad = Some("additional stuff".as_bytes());
         let mut mac = [0u8; MAC_LEN];
-        let nonce = &mut 0usize.to_be_bytes();
+        let nonce = &mut 0u32.to_be_bytes();
         assert!(sender.send(Some(&mut message), ad, &mut mac, nonce).is_ok());
         let mut ciphertext = [0u8; MSG_LEN];
         ciphertext.copy_from_slice(&message);
@@ -145,8 +145,8 @@ mod tests {
         let ad = Some("additional stuff".as_bytes());
         let mut mac1 = [0u8; MAC_LEN];
         let mut mac2 = [0u8; MAC_LEN];
-        let nonce1 = &mut 0usize.to_be_bytes();
-        let nonce2 = &mut 0usize.to_be_bytes();
+        let nonce1 = &mut 0u32.to_be_bytes();
+        let nonce2 = &mut 0u32.to_be_bytes();
 
         assert!(sender
             .send(Some(&mut message1), ad, &mut mac1, nonce1)

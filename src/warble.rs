@@ -16,7 +16,7 @@ static DOMAIN_SEP: &str = "https://github.com/mmou/warble";
 /// Warbler maintains sender's transcript for a given session
 pub struct Warbler {
     transcript: Strobe,
-    counter: usize,
+    counter: u32,
 }
 
 /// Warblee maintains the receiver's transcript for a given session.
@@ -43,7 +43,7 @@ impl Warbler {
 
         Warbler {
             transcript,
-            counter: 0usize,
+            counter: 0u32,
         }
     }
 }
@@ -75,7 +75,7 @@ impl AeadSender for Warbler {
         let transcript = &mut self.transcript.clone();
 
         // sender is responsible for not reusing nonces
-        if self.counter == usize::max_value() - 1 {
+        if self.counter == u32::max_value() - 1 {
             return Err(NonceError);
         } else {
             self.counter += 1;
@@ -110,9 +110,9 @@ impl AeadReceiver for Warblee {
         let transcript = &mut self.transcript.clone();
 
         if let Some(nonce) = nonce {
-            let mut new_nonce = 0usize.to_be_bytes();
+            let mut new_nonce = 0u32.to_be_bytes();
             new_nonce.copy_from_slice(nonce);
-            if self.window.check_counter(usize::from_be_bytes(new_nonce)) {
+            if self.window.check_counter(u32::from_be_bytes(new_nonce)) {
                 transcript.meta_ad(&new_nonce, false);
             } else {
                 return Err(AuthError);
@@ -203,7 +203,7 @@ mod tests {
 
         let ad = Some("additional stuff".as_bytes());
         let mut mac = [0u8; MAC_LEN];
-        let nonce = &mut 0usize.to_be_bytes();
+        let nonce = &mut 0u32.to_be_bytes();
 
         assert!(sender.send(Some(&mut message), ad, &mut mac, nonce).is_ok());
         let mut ciphertext = [0u8; MSG_LEN];
@@ -233,7 +233,7 @@ mod tests {
 
             let ad = Some("additional stuff".as_bytes());
             let mut mac = [0u8; MAC_LEN];
-            let nonce = &mut 0usize.to_be_bytes();
+            let nonce = &mut 0u32.to_be_bytes();
 
             assert!(sender.send(Some(&mut message), ad, &mut mac, nonce).is_ok());
             let mut ciphertext = [0u8; MSG_LEN];
@@ -268,8 +268,8 @@ mod tests {
         let ad = Some("additional stuff".as_bytes());
         let mut mac1 = [0u8; MAC_LEN];
         let mut mac2 = [0u8; MAC_LEN];
-        let nonce1 = &mut 0usize.to_be_bytes();
-        let nonce2 = &mut 0usize.to_be_bytes();
+        let nonce1 = &mut 0u32.to_be_bytes();
+        let nonce2 = &mut 0u32.to_be_bytes();
 
         assert!(sender
             .send(Some(&mut message1), ad, &mut mac1, nonce1)
@@ -315,8 +315,8 @@ mod tests {
         let ad = Some("additional stuff".as_bytes());
         let mut mac1 = [0u8; MAC_LEN];
         let mut mac2 = [0u8; MAC_LEN];
-        let nonce1 = &mut 0usize.to_be_bytes();
-        let nonce2 = &mut 0usize.to_be_bytes();
+        let nonce1 = &mut 0u32.to_be_bytes();
+        let nonce2 = &mut 0u32.to_be_bytes();
 
         // send no message
         assert!(sender.send(None, ad, &mut mac1, nonce1).is_ok());
@@ -350,7 +350,7 @@ mod tests {
 
         let ad = None;
         let mut mac = [0u8; MAC_LEN];
-        let nonce = &mut 0usize.to_be_bytes();
+        let nonce = &mut 0u32.to_be_bytes();
 
         assert!(sender.send(Some(&mut message), ad, &mut mac, nonce).is_ok());
         let mut ciphertext = [0u8; MSG_LEN];
@@ -380,7 +380,7 @@ mod tests {
 
         let ad = None;
         let mut mac = [0u8; MAC_LEN];
-        let nonce = &mut 0usize.to_be_bytes();
+        let nonce = &mut 0u32.to_be_bytes();
 
         assert!(sender.send(None, ad, &mut mac, nonce).is_ok());
         let mut ciphertext = [0u8; MSG_LEN];
@@ -399,8 +399,8 @@ mod tests {
         let message = None;
         let ad = None;
         let mut mac = [0u8; MAC_LEN];
-        let nonce = &mut 0usize.to_be_bytes();
-        sender.counter = usize::max_value() - 1;
+        let nonce = &mut 0u32.to_be_bytes();
+        sender.counter = u32::max_value() - 1;
         assert!(sender.send(message, ad, &mut mac, nonce).is_ok());
     }
 
@@ -418,7 +418,7 @@ mod tests {
 
         let ad = Some("additional stuff".as_bytes());
         let mut mac = [0u8; MAC_LEN];
-        let nonce = &mut 0usize.to_be_bytes();
+        let nonce = &mut 0u32.to_be_bytes();
 
         assert!(sender.send(None, ad, &mut mac, nonce).is_ok());
         let mut ciphertext = [0u8; MSG_LEN];
