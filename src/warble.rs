@@ -12,14 +12,11 @@ use rand_core::{CryptoRng, RngCore};
 use strobe_rs::{AuthError, Strobe};
 
 static DOMAIN_SEP: &str = "https://github.com/mmou/warble";
-const NONCE_LEN: usize = 64 / 8; // bytes
-const MAC_LEN: usize = 16; // bytes
-const MIN_LEN: usize = NONCE_LEN + MAC_LEN;
 
 /// Warbler maintains sender's transcript for a given session
 pub struct Warbler {
     transcript: Strobe,
-    counter: u64,
+    counter: u32,
 }
 
 /// Warblee maintains the receiver's transcript for a given session.
@@ -29,36 +26,36 @@ pub struct Warblee {
 }
 
 impl Warbler {
-    /// creates a new session, generates and encrypts a random session id.
-    pub fn new<T>(mut transcript: Strobe, rng: &mut T) -> (Self, Vec<u8>)
+    /// creates a new session, populates session_id with an encrypted, newly generated session id.
+    pub fn new<T>(mut transcript: Strobe, rng: &mut T, session_id: Option<&mut [u8]>) -> Self
     where
         T: RngCore + CryptoRng,
     {
-        transcript.ad(DOMAIN_SEP.as_bytes().to_vec(), None, false);
-        transcript.ad(vec![1], None, false); // protocol version 0x01
+        transcript.ad(DOMAIN_SEP.as_bytes(), false);
+        transcript.ad(&1u8.to_be_bytes(), false); // protocol version 0x01
 
         // random session id, ensures unique nonces between sessions
-        let session_id: u64 = rng.next_u64();
-        let encrypted_session_id =
-            transcript.send_enc(session_id.to_be_bytes().to_vec(), None, false);
+        if let Some(session_id) = session_id {
+            let mut new_session_id = rng.next_u64().to_be_bytes();
+            session_id.copy_from_slice(&mut new_session_id);
+            transcript.send_enc(session_id, false);
+        }
 
-        (
-            Warbler {
-                transcript,
-                counter: 0u64,
-            },
-            encrypted_session_id,
-        )
+        Warbler {
+            transcript,
+            counter: 0u32,
+        }
     }
 }
 
 impl Warblee {
     /// creates a new session with a given encrypted session id.
-    pub fn new(mut transcript: Strobe, encrypted_session_id: &[u8]) -> Self {
-        transcript.ad(DOMAIN_SEP.as_bytes().to_vec(), None, false);
-        transcript.ad(vec![1], None, false); // protocol version 0x01
-        transcript.recv_enc(encrypted_session_id.to_vec(), None, false);
-
+    pub fn new(mut transcript: Strobe, encrypted_session_id: Option<&mut [u8]>) -> Self {
+        transcript.ad(DOMAIN_SEP.as_bytes(), false);
+        transcript.ad(&1u8.to_be_bytes(), false); // protocol version 0x01
+        if let Some(encrypted_session_id) = encrypted_session_id {
+            transcript.recv_enc(encrypted_session_id, false);
+        }
         Warblee {
             transcript,
             window: Window::new(),
@@ -67,87 +64,70 @@ impl Warblee {
 }
 
 impl AeadSender for Warbler {
-    fn send(&mut self, data: Option<&[u8]>, ad: Option<&[u8]>) -> Result<Vec<u8>, NonceError> {
+    fn send(
+        &mut self,
+        data: Option<&mut [u8]>,
+        ad: Option<&[u8]>,
+        mac: &mut [u8],
+        nonce: &mut [u8],
+    ) -> Result<(), NonceError> {
         // fork the transcript
         let transcript = &mut self.transcript.clone();
 
         // sender is responsible for not reusing nonces
-        if self.counter == u64::max_value() - 1 {
+        if self.counter == u32::max_value() - 1 {
             return Err(NonceError);
         } else {
             self.counter += 1;
         }
-        let nonce = self.counter.to_be_bytes().to_vec();
-        transcript.ad(nonce.clone(), None, false);
+        let new_nonce = &self.counter.to_be_bytes();
+        transcript.meta_ad(new_nonce, false);
+        nonce.copy_from_slice(new_nonce);
 
         if let Some(ad) = ad {
-            transcript.ad(ad.to_vec(), None, false);
+            transcript.ad(ad, false);
         }
 
         // encrypt then mac
-        let mut ciphertext = nonce;
         if let Some(data) = data {
-            ciphertext.append(&mut transcript.send_enc(data.to_vec(), None, false));
+            transcript.send_enc(data, false);
         }
+        transcript.send_mac(mac, false);
 
-        ciphertext.append(&mut transcript.send_mac(MAC_LEN, None, false));
-
-        Ok(ciphertext)
+        Ok(())
     }
 }
 
 impl AeadReceiver for Warblee {
-    // expected data format: nonce || optional encrypted message || mac
-    // TODO: replace with a struct, as is done in
-    // https://github.com/rozbb/disco-rs/blob/master/src/symmetric.rs?
-    fn receive(&mut self, data: &[u8], ad: Option<&[u8]>) -> Result<Option<Vec<u8>>, AuthError> {
+    fn receive(
+        &mut self,
+        data: Option<&mut [u8]>,
+        ad: Option<&[u8]>,
+        mac: &mut [u8],
+        nonce: Option<&mut [u8]>,
+    ) -> Result<(), AuthError> {
         // fork the transcript
         let transcript = &mut self.transcript.clone();
 
-        let ciphertext = Ciphertext::parse(data)?;
-
-        let mut nonce: [u8; 8] = [0; 8];
-        nonce.copy_from_slice(ciphertext.nonce);
-        if self.window.check_counter(usize::from_be_bytes(nonce)) {
-            transcript.ad(ciphertext.nonce.to_vec(), None, false);
-        } else {
-            return Err(AuthError);
+        if let Some(nonce) = nonce {
+            let mut new_nonce = 0u32.to_be_bytes();
+            new_nonce.copy_from_slice(nonce);
+            if self.window.check_counter(u32::from_be_bytes(new_nonce)) {
+                transcript.meta_ad(&new_nonce, false);
+            } else {
+                return Err(AuthError);
+            }
         }
 
         if let Some(ad) = ad {
-            transcript.ad(ad.to_vec(), None, false);
+            transcript.ad(ad, false);
+        }
+        if let Some(data) = data {
+            transcript.recv_enc(data, false);
         }
 
-        let plaintext;
-        if ciphertext.msg.len() == 0 {
-            plaintext = None;
-        } else {
-            plaintext = Some(transcript.recv_enc(ciphertext.msg.to_vec(), None, false));
-        }
-
-        transcript.recv_mac(ciphertext.mac.to_vec(), None, false)?;
-        Ok(plaintext)
-    }
-}
-
-struct Ciphertext<'a> {
-    nonce: &'a [u8],
-    msg: &'a [u8],
-    mac: &'a [u8],
-}
-
-impl<'a> Ciphertext<'a> {
-    fn parse(data: &'a [u8]) -> Result<Ciphertext, AuthError> {
-        if data.len() < MIN_LEN {
-            return Err(AuthError);
-        }
-
-        let data_len = data.len() - MAC_LEN;
-        Ok(Ciphertext {
-            nonce: &data[..NONCE_LEN],
-            msg: &data[NONCE_LEN..data_len],
-            mac: &data[data_len..],
-        })
+        transcript.recv_mac(mac, false)?;
+        Ok(())
     }
 }
 
@@ -155,68 +135,82 @@ impl<'a> Ciphertext<'a> {
 mod tests {
     extern crate rand;
 
+    use crate::traits::*;
     use crate::warble::*;
     use rand::rngs::OsRng;
     use strobe_rs::{SecParam, Strobe};
-    use yodel::Yodeler;
 
-    // demonstrate usage with yodel for key agreement using SPEKE
-    #[allow(non_snake_case)]
-    fn setup_yodel() -> (Warbler, Warblee) {
-        let mut rng = OsRng::new().unwrap();
-
-        let s_a = Strobe::new(b"yodeltest".to_vec(), SecParam::B128);
-        let s_b = Strobe::new(b"yodeltest".to_vec(), SecParam::B128);
-
-        let (yodeler_a, X) = Yodeler::new(s_a, &mut rng, "testpassword".as_bytes());
-        let (yodeler_b, Y) = Yodeler::new(s_b, &mut rng, "testpassword".as_bytes());
-
-        let (mut tx_a, mut rx_a) = yodeler_a.complete(Y);
-        let (mut tx_b, mut rx_b) = yodeler_b.complete(X);
-
-        assert_eq!(tx_a.prf(64, None, false), rx_b.prf(64, None, false));
-        assert_eq!(tx_b.prf(64, None, false), rx_a.prf(64, None, false));
-
-        let (sender, session_id) = Warbler::new(tx_a, &mut rng);
-        let receiver = Warblee::new(rx_b, &session_id);
-        (sender, receiver)
-    }
+    const MSG_LEN: usize = 24; // bytes
 
     fn setup_warble() -> (Warbler, Warblee) {
-        let mut rng = OsRng::new().unwrap();
+        let mut ta = Strobe::new(b"warbletest", SecParam::B128);
+        let mut tb = Strobe::new(b"warbletest", SecParam::B128);
 
-        let mut ta = Strobe::new(b"yodeltest".to_vec(), SecParam::B128);
-        let mut tb = Strobe::new(b"yodeltest".to_vec(), SecParam::B128);
+        ta.key(b"secretkey", false);
+        tb.key(b"secretkey", false);
 
-        ta.key(b"secretkey".to_vec(), None, false);
-        tb.key(b"secretkey".to_vec(), None, false);
-
-        let (sender, session_id) = Warbler::new(ta, &mut rng);
-        let receiver = Warblee::new(tb, &session_id);
+        let session_id = &mut [0u8; 8];
+        let sender = Warbler::new(ta, &mut OsRng, Some(session_id));
+        let receiver = Warblee::new(tb, Some(session_id));
         (sender, receiver)
     }
 
     #[test]
     fn simple() {
         let (mut sender, mut receiver) = setup_warble();
-        let message = Some("hello world".as_bytes());
+        let txt = b"hello world";
+        let mut message = [0u8; MSG_LEN];
+        for (m, t) in message.iter_mut().zip(txt.iter()) {
+            *m = *t
+        }
+        let mut pre = [0u8; MSG_LEN];
+        pre.copy_from_slice(&message);
+
         let ad = Some("additional stuff".as_bytes());
-        let ciphertext: Vec<u8> = sender.send(message, ad).unwrap();
-        let response = receiver.receive(&ciphertext, ad);
-        assert_eq!(message, response.unwrap().deref());
+        let mut mac = [0u8; MAC_LEN];
+        let nonce = &mut 0u32.to_be_bytes();
+
+        assert!(sender.send(Some(&mut message), ad, &mut mac, nonce).is_ok());
+        let mut ciphertext = [0u8; MSG_LEN];
+        ciphertext.copy_from_slice(&message);
+
+        assert!(receiver
+            .receive(Some(&mut ciphertext), ad, &mut mac, Some(nonce))
+            .is_ok());
+        let mut round_trip = [0u8; MSG_LEN];
+        round_trip.copy_from_slice(&ciphertext);
+
+        assert_eq!(round_trip, pre);
         assert_eq!(sender.counter, 1);
     }
 
     #[test]
     fn in_order_messages() {
         let (mut sender, mut receiver) = setup_warble();
-        for i in 0..20 {
-            let message = format!("hello world {}", i);
-            let message = Some(message.as_bytes());
+        for _i in 0..20 {
+            let txt = b"hello world";
+            let mut message = [0u8; MSG_LEN];
+            for (m, t) in message.iter_mut().zip(txt.iter()) {
+                *m = *t
+            }
+            let mut pre = [0u8; MSG_LEN];
+            pre.copy_from_slice(&message);
+
             let ad = Some("additional stuff".as_bytes());
-            let ciphertext: Vec<u8> = sender.send(message, ad).unwrap();
-            let response = receiver.receive(&ciphertext, ad);
-            assert_eq!(message, response.unwrap().deref());
+            let mut mac = [0u8; MAC_LEN];
+            let nonce = &mut 0u32.to_be_bytes();
+
+            assert!(sender.send(Some(&mut message), ad, &mut mac, nonce).is_ok());
+            let mut ciphertext = [0u8; MSG_LEN];
+            ciphertext.copy_from_slice(&message);
+
+            assert!(receiver
+                .receive(Some(&mut ciphertext), ad, &mut mac, Some(nonce))
+                .is_ok());
+            let mut round_trip = [0u8; MSG_LEN];
+            round_trip.copy_from_slice(&ciphertext);
+
+            assert_eq!(round_trip, pre);
         }
         assert_eq!(sender.counter, 20);
     }
@@ -224,17 +218,49 @@ mod tests {
     #[test]
     fn unordered_messages() {
         let (mut sender, mut receiver) = setup_warble();
-        let message = Some("hello world".as_bytes());
+        let txt = b"hello world";
+        let mut message1 = [0u8; MSG_LEN];
+        let mut message2 = [0u8; MSG_LEN];
+        for (m, t) in message1.iter_mut().zip(txt.iter()) {
+            *m = *t
+        }
+        for (m, t) in message2.iter_mut().zip(txt.iter()) {
+            *m = *t
+        }
+        let mut pre = [0u8; MSG_LEN];
+        pre.copy_from_slice(&message1);
+
         let ad = Some("additional stuff".as_bytes());
+        let mut mac1 = [0u8; MAC_LEN];
+        let mut mac2 = [0u8; MAC_LEN];
+        let nonce1 = &mut 0u32.to_be_bytes();
+        let nonce2 = &mut 0u32.to_be_bytes();
 
-        let ciphertext1: Vec<u8> = sender.send(message, ad).unwrap();
-        let ciphertext2: Vec<u8> = sender.send(message, ad).unwrap();
+        assert!(sender
+            .send(Some(&mut message1), ad, &mut mac1, nonce1)
+            .is_ok());
+        let mut ciphertext1 = [0u8; MSG_LEN];
+        ciphertext1.copy_from_slice(&message1);
 
-        let response2 = receiver.receive(&ciphertext2, ad);
-        assert_eq!(message, response2.unwrap().deref());
+        assert!(sender
+            .send(Some(&mut message2), ad, &mut mac2, nonce2)
+            .is_ok());
+        let mut ciphertext2 = [0u8; MSG_LEN];
+        ciphertext2.copy_from_slice(&message2);
 
-        let response1 = receiver.receive(&ciphertext1, ad);
-        assert_eq!(message, response1.unwrap().deref());
+        assert!(receiver
+            .receive(Some(&mut ciphertext2), ad, &mut mac2, Some(nonce2))
+            .is_ok());
+        let mut round_trip2 = [0u8; MSG_LEN];
+        round_trip2.copy_from_slice(&ciphertext2);
+        assert_eq!(round_trip2, pre);
+
+        assert!(receiver
+            .receive(Some(&mut ciphertext1), ad, &mut mac1, Some(nonce1))
+            .is_ok());
+        let mut round_trip1 = [0u8; MSG_LEN];
+        round_trip1.copy_from_slice(&ciphertext1);
+        assert_eq!(round_trip1, pre);
 
         assert_eq!(sender.counter, 2);
     }
@@ -242,46 +268,93 @@ mod tests {
     #[test]
     fn no_message() {
         let (mut sender, mut receiver) = setup_warble();
-        let message = None;
+
+        let txt = b"hello world";
+        let mut message2 = [0u8; MSG_LEN];
+        for (m, t) in message2.iter_mut().zip(txt.iter()) {
+            *m = *t
+        }
+        let mut pre = [0u8; MSG_LEN];
+        pre.copy_from_slice(&message2);
+
         let ad = Some("additional stuff".as_bytes());
-        let ciphertext: Vec<u8> = sender.send(message, ad).unwrap();
-        let response = receiver.receive(&ciphertext, ad);
-        assert_eq!(message, response.unwrap().deref());
+        let mut mac1 = [0u8; MAC_LEN];
+        let mut mac2 = [0u8; MAC_LEN];
+        let nonce1 = &mut 0u32.to_be_bytes();
+        let nonce2 = &mut 0u32.to_be_bytes();
+
+        // send no message
+        assert!(sender.send(None, ad, &mut mac1, nonce1).is_ok());
+        assert!(receiver.receive(None, ad, &mut mac1, Some(nonce1)).is_ok());
+
+        // then, send a message, and assert that you get the expected message
+        assert!(sender
+            .send(Some(&mut message2), ad, &mut mac2, nonce2)
+            .is_ok());
+        let mut ciphertext2 = [0u8; MSG_LEN];
+        ciphertext2.copy_from_slice(&message2);
+
+        assert!(receiver
+            .receive(Some(&mut ciphertext2), ad, &mut mac2, Some(nonce2))
+            .is_ok());
+        let mut round_trip2 = [0u8; MSG_LEN];
+        round_trip2.copy_from_slice(&ciphertext2);
+        assert_eq!(round_trip2, pre);
     }
 
     #[test]
     fn no_additional_data() {
         let (mut sender, mut receiver) = setup_warble();
-        let message = Some("hello world".as_bytes());
-        let ad = None;
-        let ciphertext: Vec<u8> = sender.send(message, ad).unwrap();
-        let response = receiver.receive(&ciphertext, ad);
-        assert_eq!(message, response.unwrap().deref());
-    }
+        let txt = b"hello world";
+        let mut message = [0u8; MSG_LEN];
+        for (m, t) in message.iter_mut().zip(txt.iter()) {
+            *m = *t
+        }
+        let mut pre = [0u8; MSG_LEN];
+        pre.copy_from_slice(&message);
 
-    #[test]
-    fn no_data() {
-        // i mean i guess
-        let (mut sender, mut receiver) = setup_warble();
-        let message = None;
         let ad = None;
-        let ciphertext: Vec<u8> = sender.send(message, ad).unwrap();
-        let response = receiver.receive(&ciphertext, ad);
-        assert_eq!(message, response.unwrap().deref());
+        let mut mac = [0u8; MAC_LEN];
+        let nonce = &mut 0u32.to_be_bytes();
+
+        assert!(sender.send(Some(&mut message), ad, &mut mac, nonce).is_ok());
+        let mut ciphertext = [0u8; MSG_LEN];
+        ciphertext.copy_from_slice(&message);
+
+        assert!(receiver
+            .receive(Some(&mut ciphertext), ad, &mut mac, Some(nonce))
+            .is_ok());
+        let mut round_trip = [0u8; MSG_LEN];
+        round_trip.copy_from_slice(&ciphertext);
+        assert_eq!(round_trip, pre);
     }
 
     #[test]
     #[should_panic]
     fn bad_transcript() {
         let (mut sender, mut receiver) = setup_warble();
-        sender
-            .transcript
-            .ad(b"mess up the transcript!!".to_vec(), None, false);
-        let message = None;
+        sender.transcript.ad(b"mess up the transcript!!", false);
+
+        let txt = b"hello world";
+        let mut message = [0u8; MSG_LEN];
+        for (m, t) in message.iter_mut().zip(txt.iter()) {
+            *m = *t
+        }
+        let mut pre = [0u8; MSG_LEN];
+        pre.copy_from_slice(&message);
+
         let ad = None;
-        let ciphertext: Vec<u8> = sender.send(message, ad).unwrap();
-        let response = receiver.receive(&ciphertext, ad);
-        assert_eq!(message, response.unwrap().deref());
+        let mut mac = [0u8; MAC_LEN];
+        let nonce = &mut 0u32.to_be_bytes();
+
+        assert!(sender.send(None, ad, &mut mac, nonce).is_ok());
+        let mut ciphertext = [0u8; MSG_LEN];
+        ciphertext.copy_from_slice(&message);
+
+        assert!(receiver.receive(None, ad, &mut mac, Some(nonce)).is_ok());
+        let mut round_trip = [0u8; MSG_LEN];
+        round_trip.copy_from_slice(&ciphertext);
+        assert_eq!(round_trip, pre);
     }
 
     #[test]
@@ -290,28 +363,9 @@ mod tests {
         let (mut sender, _) = setup_warble();
         let message = None;
         let ad = None;
-        sender.counter = u64::max_value() - 1;
-        sender.send(message, ad).unwrap();
-    }
-
-    #[test]
-    #[should_panic]
-    fn short_ciphertext() {
-        let (mut sender, mut receiver) = setup_warble();
-        let message = Some("hello world".as_bytes());
-        let ad = Some("additional stuff".as_bytes());
-        let ciphertext: Vec<u8> = sender.send(message, ad).unwrap();
-        let response = receiver.receive(&ciphertext[..MIN_LEN - 1], ad);
-        assert_eq!(message, response.unwrap().deref());
-    }
-
-    #[test]
-    fn yodel() {
-        let (mut sender, mut receiver) = setup_yodel();
-        let message = Some("hello world".as_bytes());
-        let ad = Some("additional stuff".as_bytes());
-        let ciphertext: Vec<u8> = sender.send(message, ad).unwrap();
-        let response = receiver.receive(&ciphertext, ad);
-        assert_eq!(message, response.unwrap().deref());
+        let mut mac = [0u8; MAC_LEN];
+        let nonce = &mut 0u32.to_be_bytes();
+        sender.counter = u32::max_value() - 1;
+        assert!(sender.send(message, ad, &mut mac, nonce).is_ok());
     }
 }

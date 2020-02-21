@@ -4,30 +4,42 @@ extern crate warble;
 use rand::rngs::OsRng;
 use std::str;
 use strobe_rs::{SecParam, Strobe};
-use warble::{AeadReceiver, AeadSender, Warblee, Warbler};
+use warble::{AeadReceiver, AeadSender, Warblee, Warbler, MAC_LEN};
 
 fn main() {
     // create and key Strobe transcripts.
-    let mut rng = OsRng::new().unwrap();
-    let mut ta = Strobe::new(b"warbletest".to_vec(), SecParam::B128);
-    let mut tb = Strobe::new(b"warbletest".to_vec(), SecParam::B128);
-    ta.key(b"secretkey".to_vec(), None, false);
-    tb.key(b"secretkey".to_vec(), None, false);
+    let mut ta = Strobe::new(b"warbletest", SecParam::B128);
+    let mut tb = Strobe::new(b"warbletest", SecParam::B128);
+    ta.key(b"secretkey", false);
+    tb.key(b"secretkey", false);
 
     // ta is the sender's transcript, tb is the receiver's transcript
-    let (mut sender, session_id) = Warbler::new(ta, &mut rng);
-    let mut receiver = Warblee::new(tb, &session_id);
+    let session_id = &mut [0u8; 8];
+    let mut sender = Warbler::new(ta, &mut OsRng, Some(session_id));
+    let mut receiver = Warblee::new(tb, Some(session_id));
 
-    let messages: [&str; 2] = ["hello world", "second message"];
-    for message in &messages {
-        println!("Sending message: {:?}", message);
-        let message = Some(message.as_bytes());
+    let mut txts: [&[u8]; 2] = [b"hello world", b"second message"];
+    for txt in txts.iter_mut() {
+        println!("Sending message: {:?}", str::from_utf8(txt).unwrap());
         let ad = Some("additional stuff".as_bytes());
-        let ciphertext: Vec<u8> = sender.send(message, ad).unwrap();
-        if let Ok(Some(response)) = receiver.receive(&ciphertext, ad) {
-            println!("Received message: {:?}", str::from_utf8(&response).unwrap());
-        } else {
-            println!("Something went wrong!");
+        let mut mac = [0u8; MAC_LEN];
+        let nonce = &mut 0u32.to_be_bytes();
+
+        let mut plaintext = [0u8; 20];
+        for (m, t) in plaintext.iter_mut().zip(txt.iter()) {
+            *m = *t
         }
+        assert!(sender
+            .send(Some(&mut plaintext), ad, &mut mac, nonce)
+            .is_ok());
+        let mut ciphertext = plaintext; // renaming for readability
+        assert!(receiver
+            .receive(Some(&mut ciphertext), ad, &mut mac, Some(nonce))
+            .is_ok());
+        let round_trip = ciphertext;
+        println!(
+            "Received message: {:?}",
+            str::from_utf8(&round_trip).unwrap()
+        );
     }
 }
