@@ -139,47 +139,12 @@ mod tests {
     use crate::warble::*;
     use rand::rngs::OsRng;
     use strobe_rs::{SecParam, Strobe};
-    use yodel::{Duplex, Yodeler};
 
     const MSG_LEN: usize = 24; // bytes
 
-    // demonstrate usage with yodel for key agreement using SPEKE
-    #[allow(non_snake_case)]
-    fn setup_yodel() -> (Warbler, Warblee) {
-        let s_a = Strobe::new(b"yodeltest", SecParam::B128);
-        let s_b = Strobe::new(b"yodeltest", SecParam::B128);
-
-        let (yodeler_a, X) = Yodeler::new(s_a, &mut OsRng, "testpassword".as_bytes());
-        let (yodeler_b, Y) = Yodeler::new(s_b, &mut OsRng, "testpassword".as_bytes());
-
-        let Duplex {
-            tx: mut tx_a,
-            rx: mut rx_a,
-        } = yodeler_a.complete(Y).unwrap();
-
-        let Duplex {
-            tx: mut tx_b,
-            rx: mut rx_b,
-        } = yodeler_b.complete(X).unwrap();
-
-        let ahash = &mut [0u8; 16];
-        let bhash = &mut [0u8; 16];
-        tx_a.prf(ahash, false);
-        rx_b.prf(bhash, false);
-        assert_eq!(ahash, bhash);
-        tx_b.prf(bhash, false);
-        rx_a.prf(ahash, false);
-        assert_eq!(ahash, bhash);
-
-        let session_id = &mut [0u8; 8]; // initialize
-        let sender = Warbler::new(tx_a, &mut OsRng, Some(session_id));
-        let receiver = Warblee::new(rx_b, Some(session_id));
-        (sender, receiver)
-    }
-
     fn setup_warble() -> (Warbler, Warblee) {
-        let mut ta = Strobe::new(b"yodeltest", SecParam::B128);
-        let mut tb = Strobe::new(b"yodeltest", SecParam::B128);
+        let mut ta = Strobe::new(b"warbletest", SecParam::B128);
+        let mut tb = Strobe::new(b"warbletest", SecParam::B128);
 
         ta.key(b"secretkey", false);
         tb.key(b"secretkey", false);
@@ -402,31 +367,5 @@ mod tests {
         let nonce = &mut 0u32.to_be_bytes();
         sender.counter = u32::max_value() - 1;
         assert!(sender.send(message, ad, &mut mac, nonce).is_ok());
-    }
-
-    #[test]
-    fn yodel() {
-        let (mut sender, mut receiver) = setup_yodel();
-
-        let txt = b"hello world";
-        let mut message = [0u8; MSG_LEN];
-        for (m, t) in message.iter_mut().zip(txt.iter()) {
-            *m = *t
-        }
-        let mut pre = [0u8; MSG_LEN];
-        pre.copy_from_slice(&message);
-
-        let ad = Some("additional stuff".as_bytes());
-        let mut mac = [0u8; MAC_LEN];
-        let nonce = &mut 0u32.to_be_bytes();
-
-        assert!(sender.send(None, ad, &mut mac, nonce).is_ok());
-        let mut ciphertext = [0u8; MSG_LEN];
-        ciphertext.copy_from_slice(&message);
-
-        assert!(receiver.receive(None, ad, &mut mac, Some(nonce)).is_ok());
-        let mut round_trip = [0u8; MSG_LEN];
-        round_trip.copy_from_slice(&ciphertext);
-        assert_eq!(round_trip, pre);
     }
 }
