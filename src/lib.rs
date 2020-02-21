@@ -5,7 +5,7 @@ mod traits;
 mod warble;
 mod window;
 
-#[cfg(any(test, feature = "rand"))]
+#[cfg(any(test, feature = "std"))]
 extern crate rand;
 
 pub use crate::traits::{AeadReceiver, AeadSender, NonceError, DOMAIN_SEP, MAC_LEN};

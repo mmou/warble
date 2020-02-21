@@ -9,5 +9,5 @@ strobe-rs = { git = "https://git.cutelab.house/evq/strobe-rs", branch = "master"
 rand_core = { version = "0.5.1", default-features = false }
 
 [dev-dependencies]
-rand = "0.7"
-yodel = { git = "https://git.cutelab.house/evq/yodel", branch = "mmou" }
+yodel = { git = "https://git.cutelab.house/evq/yodel" }
+rand = { version = "0.7" }
